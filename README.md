@@ -176,9 +176,9 @@ From the `plm-system/` directory:
 
 This project was built collaboratively by:
 
-- **[j-a-y-e-s-h](https://github.com/j-a-y-e-s-h)** (Jayesh Parmar) --
-- **[kamleshp-iy9](https://github.com/kamleshp-iy9)** (Kamlesh) --
-- **[YashPatil2023](https://github.com/YashPatil2023)** (Yash Patil) --
+- **[j-a-y-e-s-h](https://github.com/j-a-y-e-s-h)** (Jayesh Parmar)
+- **[kamleshp-iy9](https://github.com/kamleshp-iy9)** (Kamlesh)
+- **[YashPatil2023](https://github.com/YashPatil2023)** (Yash Patil)
 
 Built in 24 hours at Hackathon 2026 with ❤️
 
