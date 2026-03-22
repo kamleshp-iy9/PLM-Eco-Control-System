@@ -1,0 +1,21 @@
+{
+  "name": "plm-system",
+  "version": "1.0.0",
+  "description": "PLM - Engineering Change Order System",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev -- --host",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "db:migrate": "cd server && npx prisma migrate dev --name init",
+    "db:seed": "cd server && npx prisma db seed",
+    "db:reset": "cd server && npx prisma migrate reset --force",
+    "setup": "npm run install:all && npm run db:migrate && npm run db:seed",
+    "build": "cd client && npm run build",
+    "start": "cd server && npm start"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
