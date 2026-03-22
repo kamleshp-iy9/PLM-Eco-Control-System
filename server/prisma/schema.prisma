@@ -1,0 +1,325 @@
+// ─── Prisma schema — PLM ECO System ───────────────────────────────────────────
+// This file defines the complete database structure.
+// Run `npm run db:migrate` to apply changes to PostgreSQL.
+// Run `npm run db:seed` to populate with sample data.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // set in server/.env
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+// User roles — controls what each user can see and do in the system
+enum Role {
+  ADMIN            // full access: user management, settings, all ECOs
+  ENGINEERING_USER // can create/edit products, BOMs, and ECOs
+  APPROVER         // reviews and approves/rejects ECOs at assigned stages
+  OPERATIONS_USER  // read-only access to all data
+}
+
+// User account lifecycle — new signups start at PENDING_APPROVAL
+enum AccountStatus {
+  PENDING_APPROVAL // waiting for an admin to review and activate
+  ACTIVE           // can log in and use the system
+  REJECTED         // admin declined the signup request
+  SUSPENDED        // was active but has been temporarily blocked
+}
+
+// Generic active/archived flag used on Products, BOMs, and Attachments
+enum Status {
+  ACTIVE
+  ARCHIVED // soft-deleted — never physically removed, just hidden from active lists
+}
+
+// Whether an ECO targets a Product or a Bill of Materials
+enum EcoType {
+  PRODUCT
+  BOM
+}
+
+// Tracks where an ECO is in its overall lifecycle
+enum EcoState {
+  IN_PROGRESS // being worked on or waiting for approvals
+  APPROVED    // all approvals received and changes applied to the product/BOM
+  CANCELLED   // rejected at the first stage — no previous stage to fall back to
+}
+
+// How a user's approval rule affects stage advancement
+enum ApprovalCategory {
+  REQUIRED     // ECO cannot advance until this person approves
+  OPTIONAL     // approval is welcome but not blocking
+  COMMENT_ONLY // can comment but their approval does not affect stage advancement
+}
+
+// The two possible outcomes when an approver acts on an ECO
+enum ApprovalAction {
+  APPROVED
+  REJECTED
+}
+
+// ─── USER ─────────────────────────────────────────────────────────────────────
+// Represents everyone who can log into the system.
+// New users register and wait in PENDING_APPROVAL until an admin activates them.
+// The requestedRole field stores what role they asked for at signup so admins can
+// approve or override it.
+
+model User {
+  id              String         @id @default(uuid())
+  loginId         String         @unique   // the username typed on the login screen
+  name            String
+  email           String         @unique
+  password        String                   // bcrypt hash — never stored in plain text
+  role            Role           @default(ENGINEERING_USER)
+  requestedRole   Role?                    // what role the user asked for at signup
+  approvedRole    Role?                    // permanent record of the role granted by admin
+  accountStatus   AccountStatus  @default(ACTIVE)
+  approvedBy      String?                  // FK to the admin who approved/rejected this user
+  approvedAt      DateTime?
+  rejectionReason String?                  // shown to the user if their account is rejected
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  // Self-referential relation: an admin user approves other users
+  approvedByUser  User?          @relation("UserApprovals", fields: [approvedBy], references: [id])
+  approvedUsers   User[]         @relation("UserApprovals")
+
+  ecos            Eco[]          // ECOs created by this user
+  approvals       EcoApproval[]  // approval actions this user has taken
+  auditLogs       AuditLog[]     // audit entries authored by this user
+  approvalRules   ApprovalRule[] // stages this user is assigned to review
+  uploads         Attachment[]   @relation("AttachmentUploader")
+}
+
+// ─── PRODUCT ──────────────────────────────────────────────────────────────────
+// A product is the top-level item being managed. Each time an ECO is applied with
+// versionUpdate=true, a new Product row is created and the old one is ARCHIVED.
+// Versions are linked via parentId so the full history is traversable.
+
+model Product {
+  id                String       @id @default(uuid())
+  name              String
+  salesPrice        Float
+  costPrice         Float
+  attachments       Json         @default("[]") // legacy JSON field (newer products use Attachment table)
+  version           Int          @default(1)
+  status            Status       @default(ACTIVE)
+  parentId          String?                     // points to the previous version of this product
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  parent            Product?     @relation("ProductVersions", fields: [parentId], references: [id])
+  versions          Product[]    @relation("ProductVersions") // all newer versions
+  boms              Bom[]
+  ecos              Eco[]
+  attachmentRecords Attachment[]
+
+  @@index([name, version]) // speeds up searching by product name + version
+}
+
+// ─── BILL OF MATERIALS ────────────────────────────────────────────────────────
+// A BOM belongs to a product and lists the components and operations needed to
+// manufacture it. Like products, BOMs are versioned — old versions are ARCHIVED
+// when a new one is created via an ECO.
+
+model Bom {
+  id                String         @id @default(uuid())
+  reference         String         @unique  // human-readable ID like BOM-0042
+  productId         String
+  quantity          Float          @default(1)
+  units             String         @default("Units")
+  version           Int            @default(1)
+  status            Status         @default(ACTIVE)
+  parentId          String?                  // points to the previous version of this BOM
+
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  product           Product        @relation(fields: [productId], references: [id])
+  parent            Bom?           @relation("BomVersions", fields: [parentId], references: [id])
+  nextVersions      Bom[]          @relation("BomVersions")
+  components        BomComponent[]
+  operations        BomOperation[]
+  ecos              Eco[]
+  attachmentRecords Attachment[]
+
+  @@index([productId, version])
+}
+
+// A single raw material or sub-assembly that makes up a BOM
+// Deleted automatically when the parent BOM is deleted (onDelete: Cascade)
+model BomComponent {
+  id            String   @id @default(uuid())
+  bomId         String
+  componentName String
+  quantity      Float
+  units         String   @default("Units")
+
+  bom           Bom      @relation(fields: [bomId], references: [id], onDelete: Cascade)
+}
+
+// A manufacturing step associated with a BOM (e.g. "Assembly", "Welding")
+// Deleted automatically when the parent BOM is deleted (onDelete: Cascade)
+model BomOperation {
+  id               String   @id @default(uuid())
+  bomId            String
+  operationName    String
+  expectedDuration Int       // duration in minutes
+  workCenter       String    // the department or machine that performs this operation
+
+  bom              Bom      @relation(fields: [bomId], references: [id], onDelete: Cascade)
+}
+
+// ─── ECO STAGES ───────────────────────────────────────────────────────────────
+// The configurable workflow pipeline that every ECO moves through.
+// Default stages: New → In Progress → Approval → Done
+// Admins can add, rename, and reorder stages from the Settings page.
+// sequence determines the order. isFinal=true marks the end of the pipeline.
+
+model EcoStage {
+  id                String         @id @default(uuid())
+  name              String         @unique
+  sequence          Int            @unique   // determines pipeline order
+  isFinal           Boolean        @default(false)           // is this the last stage?
+  requiresApproval  Boolean        @default(false)           // does this stage need approvers?
+  allowApplyChanges Boolean        @default(false)           // are product/BOM changes applied when entering this stage?
+  folded            Boolean        @default(false)           // UI state — collapse this stage column in the kanban view
+  description       String?
+  createdAt         DateTime       @default(now())
+
+  ecos              Eco[]
+  approvalRules     ApprovalRule[]
+  approvals         EcoApproval[]
+}
+
+// ─── APPROVAL RULES ───────────────────────────────────────────────────────────
+// Links a user to a stage and defines how their approval affects stage advancement.
+// There can be at most one rule per user per stage (@@unique constraint).
+
+model ApprovalRule {
+  id               String           @id @default(uuid())
+  name             String
+  userId           String
+  stageId          String
+  approvalCategory ApprovalCategory @default(REQUIRED)
+  isActive         Boolean          @default(true) // inactive rules are ignored without deleting them
+
+  user             User             @relation(fields: [userId], references: [id])
+  stage            EcoStage         @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stageId]) // one rule per user per stage
+}
+
+// ─── ENGINEERING CHANGE ORDER ─────────────────────────────────────────────────
+// The central entity. An ECO represents a proposed change to a product or BOM.
+// It moves through stages, collects approvals, and when applied it writes the
+// changes to the product/BOM and creates new versions if versionUpdate=true.
+//
+// proposedProductChanges / proposedBomChanges store the "diff" as JSON —
+// what the product/BOM should look like after the ECO is applied.
+
+model Eco {
+  id                     String    @id @default(uuid())
+  reference              String    @unique   // human-readable ID like ECO-0001
+  title                  String
+  description            String?
+  ecoType                EcoType             // PRODUCT or BOM
+  productId              String
+  bomId                  String?             // set for BOM ECOs, or auto-linked after apply
+  userId                 String              // the engineer who created this ECO
+  stageId                String              // current stage in the workflow
+  effectiveDate          DateTime?           // requested date for the change to go live
+  appliedAt              DateTime?           // timestamp when changes were actually applied
+  versionUpdate          Boolean   @default(true)  // true = create new version, false = edit in place
+  state                  EcoState  @default(IN_PROGRESS)
+  isStarted              Boolean   @default(false)  // must be started before advancing stages
+  isApplied              Boolean   @default(false)  // set to true once applyEco() runs
+
+  proposedProductChanges Json?     // snapshot of proposed product field changes
+  proposedBomChanges     Json?     // snapshot of proposed BOM component/operation changes
+
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  product                Product   @relation(fields: [productId], references: [id])
+  bom                    Bom?      @relation(fields: [bomId], references: [id])
+  user                   User      @relation(fields: [userId], references: [id])
+  stage                  EcoStage  @relation(fields: [stageId], references: [id])
+  approvals              EcoApproval[]
+  auditLogs              AuditLog[]
+  attachmentRecords      Attachment[]
+}
+
+// Records a single approval or rejection action by one user on one ECO at one stage.
+// onDelete: Cascade — approval records are removed if the ECO is deleted.
+model EcoApproval {
+  id        String         @id @default(uuid())
+  ecoId     String
+  userId    String
+  stageId   String
+  action    ApprovalAction  // APPROVED or REJECTED
+  comments  String?
+  createdAt DateTime       @default(now())
+
+  eco       Eco            @relation(fields: [ecoId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id])
+  stage     EcoStage       @relation(fields: [stageId], references: [id])
+}
+
+// ─── ATTACHMENT ───────────────────────────────────────────────────────────────
+// Stores metadata for uploaded files. One attachment can belong to a product,
+// a BOM, or an ECO (only one of the three FKs is set per row).
+// Files are served as static assets from /uploads on disk.
+
+model Attachment {
+  id          String   @id @default(uuid())
+  productId   String?  // set if this file belongs to a product
+  bomId       String?  // set if this file belongs to a BOM
+  ecoId       String?  // set if this file belongs to an ECO
+  fileName    String
+  fileUrl     String   // relative path served under /uploads/
+  mimeType    String
+  fileSize    Int       // size in bytes
+  version     Int      @default(1)
+  status      Status   @default(ACTIVE) // ARCHIVED when the owning product/BOM is versioned
+  uploadedBy  String   // FK to the User who uploaded this file
+  description String?
+  createdAt   DateTime @default(now())
+
+  product     Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  bom         Bom?     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  eco         Eco?     @relation(fields: [ecoId], references: [id], onDelete: Cascade)
+  uploader    User     @relation("AttachmentUploader", fields: [uploadedBy], references: [id])
+
+  @@index([productId, fileName, version])
+  @@index([bomId, fileName, version])
+  @@index([ecoId, fileName, version])
+}
+
+// ─── AUDIT LOG ────────────────────────────────────────────────────────────────
+// Immutable record of every meaningful action in the system.
+// oldValue/newValue are JSON snapshots of what changed so we have a full history.
+// Common actions: ECO_APPLIED, STAGE_TRANSITION, APPROVAL_RECORDED, USER_APPROVED, etc.
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  action     String   // what happened, e.g. "ECO_APPLIED", "PRODUCT_CHANGED"
+  entityType String   // which model was affected, e.g. "ECO", "Product", "User"
+  entityId   String   // the ID of the affected record
+  oldValue   Json?    // snapshot of the record before the change
+  newValue   Json?    // snapshot of the record after the change
+  userId     String   // who triggered the action
+  ecoId      String?  // linked ECO (if the action is related to one)
+  timestamp  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id])
+  eco        Eco?     @relation(fields: [ecoId], references: [id])
+
+  @@index([entityType, entityId]) // fast lookup for "show all history for this product"
+  @@index([ecoId])                // fast lookup for "show all activity on this ECO"
+}
