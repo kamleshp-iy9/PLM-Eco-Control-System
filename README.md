@@ -10,7 +10,6 @@ A full-stack Product Lifecycle Management system for managing Engineering Change
 
 [![PLM ECO System Demo](https://img.shields.io/badge/YouTube-Watch%20Demo-red?logo=youtube&logoColor=white&style=for-the-badge)]([https://www.youtube.com/your-video-link-here](https://youtu.be/fqHUgY9hRNA?si=TJ3clMLuqeN5i_nr))
 
-> Replace the link above with your actual YouTube video URL.
 
 ---
 
