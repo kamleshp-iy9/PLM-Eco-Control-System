@@ -20,7 +20,7 @@ A full-stack Product Lifecycle Management system for managing Engineering Change
 - **Configurable Approval Workflow** — Multi-stage ECO pipeline with per-stage approval rules (Required / Optional / Comment Only)
 - **Role-Based Access Control** — Four roles: Admin, Engineering User, Approver, Operations User
 - **Audit Trail** — Full history of every action on every ECO
-- **Real-Time Updates** — Socket.io powered live notifications
+- **Real-Time Updates** - Socket.io powered live notifications
 - **Reports** — ECO and product reports
 - **Admin Panel** — Manage users, approve/reject registrations, assign roles
 - **File Uploads** - Attach files to products, BOMs, and ECOs
