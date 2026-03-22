@@ -23,7 +23,7 @@ A full-stack Product Lifecycle Management system for managing Engineering Change
 - **Real-Time Updates** — Socket.io powered live notifications
 - **Reports** — ECO and product reports
 - **Admin Panel** — Manage users, approve/reject registrations, assign roles
-- **File Uploads** — Attach files to products, BOMs, and ECOs
+- **File Uploads** - Attach files to products, BOMs, and ECOs
 
 ---
 
